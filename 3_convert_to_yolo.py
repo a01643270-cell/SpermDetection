@@ -43,22 +43,26 @@ def collect_images(images_dir: Path) -> list[Path]:
     return sorted([p for p in images_dir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS])
 
 
-def split_items(items: list[Path], train_ratio: float, val_ratio: float, test_ratio: float, seed: int) -> dict[str, list[Path]]:
+def split_items(
+    image_paths: list[Path], train_ratio: float, val_ratio: float, test_ratio: float, seed: int
+) -> dict[str, list[Path]]:
+    """Split with floor rounding for train/val; test receives remaining images."""
     total = train_ratio + val_ratio + test_ratio
     if abs(total - 1.0) > 1e-6:
         raise ValueError("Train/val/test ratios must sum to 1.0")
 
-    random.Random(seed).shuffle(items)
-    n = len(items)
+    rng = random.Random(seed)
+    rng.shuffle(image_paths)
+    n = len(image_paths)
 
     n_train = int(n * train_ratio)
     n_val = int(n * val_ratio)
     n_test = n - n_train - n_val
 
     return {
-        "train": items[:n_train],
-        "val": items[n_train : n_train + n_val],
-        "test": items[n_train + n_val : n_train + n_val + n_test],
+        "train": image_paths[:n_train],
+        "val": image_paths[n_train : n_train + n_val],
+        "test": image_paths[n_train + n_val : n_train + n_val + n_test],
     }
 
 

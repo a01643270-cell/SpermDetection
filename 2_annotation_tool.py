@@ -12,6 +12,8 @@ from typing import Optional
 import cv2
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+MIN_BOX_SIZE = 3
+TEXT_LINE_HEIGHT = 28
 
 
 @dataclass
@@ -129,11 +131,11 @@ class AnnotationTool:
             "Keys: [N/Space] next  [P] prev  [S] save  [U] undo  [D] delete file  [Q] quit",
         ]
 
-        y = 28
+        y = TEXT_LINE_HEIGHT
         for line in help_lines:
             cv2.putText(canvas, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.putText(canvas, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (30, 30, 30), 1, cv2.LINE_AA)
-            y += 28
+            y += TEXT_LINE_HEIGHT
 
         return canvas
 
@@ -152,7 +154,7 @@ class AnnotationTool:
         elif event == cv2.EVENT_LBUTTONUP and self.drawing:
             self.drawing = False
             self.tmp_x, self.tmp_y = x, y
-            if abs(self.start_x - x) >= 3 and abs(self.start_y - y) >= 3:
+            if abs(self.start_x - x) >= MIN_BOX_SIZE and abs(self.start_y - y) >= MIN_BOX_SIZE:
                 self.boxes.append(BBox(self.start_x, self.start_y, x, y))
         elif event == cv2.EVENT_RBUTTONDOWN:
             if self.boxes:
@@ -193,11 +195,17 @@ class AnnotationTool:
                     self.delete_annotation_file()
                 elif key in (ord("n"), 32):
                     self.save_annotations()
-                    self.idx = min(self.idx + 1, len(self.image_paths) - 1)
+                    if self.idx >= len(self.image_paths) - 1:
+                        print("Already at last image.")
+                        continue
+                    self.idx += 1
                     break
                 elif key in (ord("p"),):
                     self.save_annotations()
-                    self.idx = max(self.idx - 1, 0)
+                    if self.idx <= 0:
+                        print("Already at first image.")
+                        continue
+                    self.idx -= 1
                     break
 
 

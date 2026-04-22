@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections import deque
 from pathlib import Path
 
 import cv2
+
+MIN_TIME_DELTA = 1e-9
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,6 +54,9 @@ def main() -> None:
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+    if width <= 0 or height <= 0:
+        cap.release()
+        raise RuntimeError(f"Invalid frame size from source {args.source}: width={width}, height={height}")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(
@@ -58,6 +64,7 @@ def main() -> None:
     )
 
     last = time.time()
+    fps_window = deque(maxlen=30)
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -74,13 +81,13 @@ def main() -> None:
             for (x1, y1, x2, y2), conf, cls_id in zip(xyxy, confs, clss):
                 if cls_id != args.class_id:
                     continue
-                l = float(x1)
-                t = float(y1)
-                w = float(x2 - x1)
-                h = float(y2 - y1)
-                if w <= 0 or h <= 0:
+                left = float(x1)
+                top = float(y1)
+                box_width = float(x2 - x1)
+                box_height = float(y2 - y1)
+                if box_width <= 0 or box_height <= 0:
                     continue
-                detections.append(([l, t, w, h], float(conf), str(cls_id)))
+                detections.append(([left, top, box_width, box_height], float(conf), str(cls_id)))
 
         tracks = tracker.update_tracks(detections, frame=frame)
 
@@ -103,17 +110,27 @@ def main() -> None:
                 cv2.LINE_AA,
             )
 
-        now = time.time()
-        fps_text = 1.0 / max(1e-9, now - last)
-        last = now
-        cv2.putText(frame, f"FPS: {fps_text:.1f}", (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
-
-        writer.write(frame)
-
         if not args.no_show:
+            now = time.time()
+            current_fps = 1.0 / max(MIN_TIME_DELTA, now - last)
+            fps_window.append(current_fps)
+            smoothed_fps = sum(fps_window) / len(fps_window)
+            last = now
+            cv2.putText(
+                frame,
+                f"FPS: {smoothed_fps:.1f}",
+                (10, 32),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
             cv2.imshow("YOLOv8 + DeepSort", frame)
             if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
                 break
+
+        writer.write(frame)
 
     cap.release()
     writer.release()

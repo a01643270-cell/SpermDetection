@@ -48,7 +48,7 @@ python 1_extract_frames.py \
 ```
 
 Notas:
-- `--frame-step 5` en un video de 30 fps guarda ~6 fps para anotación.
+- `--frame-step 5` en un video de 30 fps guarda exactamente 6 fps para anotación.
 - Se crea `datasets/frames/extraction_metadata.csv` con estadísticas.
 
 ## 2) Anotación interactiva
