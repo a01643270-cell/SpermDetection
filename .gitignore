@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Data and models
+datasets/
+models/
+outputs/
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
