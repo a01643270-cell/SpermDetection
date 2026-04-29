@@ -4,6 +4,8 @@ import torch
 from ultralytics import YOLO
 from deep_sort_realtime.deepsort_tracker import DeepSort
 from collections import defaultdict
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
 
 
 class SpermTracker:
@@ -225,34 +227,231 @@ class SpermTracker:
         return annotated_frame, tracks, detections
 
 
-def main():
-    BASE_DIR = Path(r"C:\Projects\SpermDetection")
+def _init_tk():
+    """Create and immediately hide a Tk root window."""
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        pass
+    return root
 
-    MODEL_PATH = BASE_DIR / "runs" / "detect" / "runs" / "sperm_yolo" / "exp1-3" / "weights" / "best.pt"
-    INPUT_VIDEO = BASE_DIR / "datasets" / "raw_videos" / "test_video.avi"
-    OUTPUT_VIDEO = BASE_DIR / "outputs" / "tracked_video.mp4"
 
-    CONF_THRESHOLD = 0.1
-    SKIP_FRAMES = 1
+def _select_model_file():
+    """Ask the user to select a YOLO model .pt file."""
+    print("\n" + "=" * 60)
+    print("🤖  STEP 1: Select YOLO model file  (.pt)")
+    print("=" * 60)
+    print("Please choose the trained YOLO model weights file (.pt).")
 
-    if not MODEL_PATH.exists():
-        print(f"❌ Model not found: {MODEL_PATH}")
-        return
-
-    if not INPUT_VIDEO.exists():
-        print(f"❌ Input video not found: {INPUT_VIDEO}")
-        return
-
-    OUTPUT_VIDEO.parent.mkdir(parents=True, exist_ok=True)
-
-    tracker = SpermTracker(model_path=str(MODEL_PATH))
-
-    tracker.process_video(
-        INPUT_VIDEO,
-        output_path=OUTPUT_VIDEO,
-        conf_threshold=CONF_THRESHOLD,
-        skip_frames=SKIP_FRAMES,
+    default_model = Path("runs/detect/sperm_detector/weights/best.pt")
+    default_dir = (
+        str(default_model.parent.resolve())
+        if default_model.parent.exists()
+        else "."
     )
+
+    root = _init_tk()
+    model_file = filedialog.askopenfilename(
+        title="Select YOLO model file (.pt)",
+        initialdir=default_dir,
+        filetypes=[("PyTorch model", "*.pt"), ("All files", "*.*")],
+    )
+    root.destroy()
+
+    if not model_file:
+        print("❌  No model file selected. Exiting.")
+        return None
+
+    model_path = Path(model_file)
+    if not model_path.exists():
+        print(f"❌  Model file not found: {model_path}")
+        return None
+
+    size_mb = model_path.stat().st_size / (1024 * 1024)
+    print(f"✅  Model file : {model_path}")
+    print(f"    Size       : {size_mb:.1f} MB")
+    return str(model_path)
+
+
+def _select_video_files():
+    """Ask the user to select one or more input video files."""
+    print("\n" + "=" * 60)
+    print("🎬  STEP 2: Select input video file(s)")
+    print("=" * 60)
+    print("Please choose the video file(s) to process.")
+    print("(You can select multiple files for batch processing.)")
+
+    default_dir = (
+        str(Path("datasets/raw_videos").resolve())
+        if Path("datasets/raw_videos").exists()
+        else "."
+    )
+
+    root = _init_tk()
+    video_files = filedialog.askopenfilenames(
+        title="Select input video file(s) — AVI, MP4, etc.",
+        initialdir=default_dir,
+        filetypes=[
+            ("Video files", "*.avi *.mp4 *.mkv *.mov *.wmv"),
+            ("AVI files", "*.avi"),
+            ("MP4 files", "*.mp4"),
+            ("All files", "*.*"),
+        ],
+    )
+    root.destroy()
+
+    if not video_files:
+        print("❌  No video file selected. Exiting.")
+        return None
+
+    videos = [Path(v) for v in video_files]
+    print(f"✅  Selected {len(videos)} video(s):")
+    for v in videos:
+        size_mb = v.stat().st_size / (1024 * 1024)
+        print(f"    📹 {v.name}  ({size_mb:.1f} MB)")
+    return videos
+
+
+def _select_output_folder():
+    """Ask the user to select an output folder for results."""
+    print("\n" + "=" * 60)
+    print("📁  STEP 3: Select OUTPUT folder")
+    print("=" * 60)
+    print("Please choose the folder where result videos will be saved.")
+
+    default = (
+        str(Path("outputs").resolve())
+        if Path("outputs").exists()
+        else "."
+    )
+
+    root = _init_tk()
+    folder = filedialog.askdirectory(
+        title="Select output folder — processed videos will be saved here",
+        initialdir=default,
+    )
+    root.destroy()
+
+    if not folder:
+        folder = "outputs"
+        print(f"⚠️   No folder selected. Using default: {folder}")
+    else:
+        print(f"✅  Output folder : {folder}")
+
+    Path(folder).mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _ask_processing_params():
+    """Ask the user for detection confidence and frame skip."""
+    print("\n" + "=" * 60)
+    print("⚙️   STEP 4: Configure processing parameters")
+    print("=" * 60)
+
+    root = _init_tk()
+    conf_raw = simpledialog.askfloat(
+        "Detection Confidence",
+        "Detection confidence threshold  (0.0 – 1.0)\n\n"
+        "Higher = fewer but more certain detections.\nDefault: 0.5",
+        initialvalue=0.5,
+        minvalue=0.01,
+        maxvalue=1.0,
+        parent=root,
+    )
+    root.destroy()
+
+    if conf_raw is None:
+        conf_raw = 0.5
+        print(f"⚠️   Using default confidence: {conf_raw}")
+    else:
+        print(f"✅  Confidence threshold : {conf_raw}")
+
+    root2 = _init_tk()
+    skip_raw = simpledialog.askinteger(
+        "Frame Skip",
+        "Process every N-th frame  (1 = all frames, 2 = every other, …)\n\n"
+        "Higher values are faster but may miss fast movements.\nDefault: 1",
+        initialvalue=1,
+        minvalue=1,
+        maxvalue=100,
+        parent=root2,
+    )
+    root2.destroy()
+
+    if skip_raw is None:
+        skip_raw = 1
+        print(f"⚠️   Using default skip: {skip_raw}")
+    else:
+        print(f"✅  Frame skip           : {skip_raw}")
+
+    return conf_raw, skip_raw
+
+
+def main():
+    print("\n" + "🔬 " * 20)
+    print("  SPERM DETECTION — YOLO + DeepSort Tracker")
+    print("🔬 " * 20)
+
+    model_path = _select_model_file()
+    if model_path is None:
+        raise SystemExit(1)
+
+    video_files = _select_video_files()
+    if video_files is None:
+        raise SystemExit(1)
+
+    output_dir = _select_output_folder()
+    conf_threshold, skip_frames = _ask_processing_params()
+
+    print("\n" + "=" * 60)
+    print("📋  Configuration Summary")
+    print("=" * 60)
+    print(f"  🤖 Model           : {model_path}")
+    print(f"  🎬 Videos          : {len(video_files)} file(s)")
+    print(f"  📂 Output folder   : {output_dir}")
+    print(f"  🎯 Confidence      : {conf_threshold}")
+    print(f"  ⏭️   Frame skip      : {skip_frames}")
+    print("=" * 60)
+
+    root = _init_tk()
+    proceed = messagebox.askyesno(
+        "Confirm",
+        f"Ready to process {len(video_files)} video(s).\n\n"
+        f"Model     : {Path(model_path).name}\n"
+        f"Output    : {output_dir}\n"
+        f"Confidence: {conf_threshold}\n"
+        f"Skip      : every {skip_frames} frame(s)\n\n"
+        "Proceed?",
+    )
+    root.destroy()
+
+    if not proceed:
+        print("❌  Cancelled by user.")
+        raise SystemExit(0)
+
+    print("\n🚀  Loading model and starting processing...\n")
+    tracker = SpermTracker(model_path=model_path)
+
+    for video_path in video_files:
+        output_name = f"{video_path.stem}_tracked.mp4"
+        output_path = Path(output_dir) / output_name
+
+        print(f"\n{'─' * 60}")
+        print(f"📹  Processing: {video_path.name}")
+        print(f"    → Output  : {output_path}")
+
+        tracker.process_video(
+            video_path,
+            output_path=output_path,
+            conf_threshold=conf_threshold,
+            skip_frames=skip_frames,
+        )
+
+    print(f"\n{'=' * 60}")
+    print(f"✅  All done! Results saved to: {output_dir}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
