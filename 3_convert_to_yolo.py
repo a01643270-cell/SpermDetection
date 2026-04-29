@@ -3,6 +3,8 @@ import random
 import shutil
 from pathlib import Path
 from typing import List, Tuple, Optional
+import tkinter as tk
+from tkinter import filedialog, messagebox
 
 import cv2
 import yaml
@@ -291,15 +293,178 @@ class AnnotationConverter:
         print(f"\n✅ YOLO dataset ready at: {self.output_dir}")
 
 
-if __name__ == "__main__":
-    ANNOTATIONS_DIR = "datasets/annotations"
-    IMAGES_DIR = "datasets/frames"
-    OUTPUT_DIR = "datasets/yolo_data"
+def _init_tk():
+    """Create and immediately hide a Tk root window."""
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        pass
+    return root
 
+
+def _select_annotations_folder():
+    """Ask the user to select the annotations input folder."""
+    print("\n" + "=" * 60)
+    print("📁  STEP 1: Select ANNOTATIONS folder")
+    print("=" * 60)
+    print("Please choose the folder that contains the JSON annotation files.")
+
+    default = (
+        str(Path("datasets/annotations").resolve())
+        if Path("datasets/annotations").exists()
+        else "."
+    )
+
+    root = _init_tk()
+    folder = filedialog.askdirectory(
+        title="Select 'annotations' folder — contains *_annotations.json files",
+        initialdir=default,
+    )
+    root.destroy()
+
+    if not folder:
+        print("❌  No folder selected. Exiting.")
+        return None
+
+    folder_path = Path(folder)
+    json_files = list(folder_path.glob("*_annotations.json"))
+    if not json_files:
+        root2 = _init_tk()
+        retry = messagebox.askyesno(
+            "No annotation files found",
+            f"No *_annotations.json files were found in:\n{folder}\n\n"
+            "Do you want to select a different folder?",
+        )
+        root2.destroy()
+        if retry:
+            return _select_annotations_folder()
+        print("⚠️   Proceeding with the selected folder.")
+
+    print(f"✅  Annotations folder : {folder}")
+    if json_files:
+        print(f"    Found {len(json_files)} annotation file(s).")
+    return folder
+
+
+def _select_frames_folder():
+    """Ask the user to select the frames (images) input folder."""
+    print("\n" + "=" * 60)
+    print("📁  STEP 2: Select FRAMES folder  (images)")
+    print("=" * 60)
+    print("Please choose the folder that contains the extracted frame images.")
+
+    default = (
+        str(Path("datasets/frames").resolve())
+        if Path("datasets/frames").exists()
+        else "."
+    )
+
+    root = _init_tk()
+    folder = filedialog.askdirectory(
+        title="Select 'frames' folder — contains extracted JPG/PNG images",
+        initialdir=default,
+    )
+    root.destroy()
+
+    if not folder:
+        print("❌  No folder selected. Exiting.")
+        return None
+
+    folder_path = Path(folder)
+    images = list(folder_path.rglob("*.jpg")) + list(folder_path.rglob("*.png"))
+    if not images:
+        root2 = _init_tk()
+        retry = messagebox.askyesno(
+            "No images found",
+            f"No JPG/PNG images were found in:\n{folder}\n\n"
+            "Do you want to select a different folder?",
+        )
+        root2.destroy()
+        if retry:
+            return _select_frames_folder()
+        print("⚠️   Proceeding with the selected folder.")
+
+    print(f"✅  Frames folder      : {folder}")
+    if images:
+        print(f"    Found {len(images)} image file(s).")
+    return folder
+
+
+def _select_output_folder():
+    """Ask the user to select or confirm the yolo_data output folder."""
+    print("\n" + "=" * 60)
+    print("📁  STEP 3: Select OUTPUT folder  (yolo_data)")
+    print("=" * 60)
+    print("Please choose the folder where the YOLO dataset will be saved.")
+    print("(It will be created if it does not exist.)")
+
+    default = (
+        str(Path("datasets/yolo_data").resolve())
+        if Path("datasets/yolo_data").exists()
+        else "."
+    )
+
+    root = _init_tk()
+    folder = filedialog.askdirectory(
+        title="Select 'yolo_data' output folder — YOLO dataset will be saved here",
+        initialdir=default,
+    )
+    root.destroy()
+
+    if not folder:
+        folder = "datasets/yolo_data"
+        print(f"⚠️   No folder selected. Using default: {folder}")
+    else:
+        print(f"✅  Output folder      : {folder}")
+
+    return folder
+
+
+if __name__ == "__main__":
+    print("\n" + "🔬 " * 20)
+    print("  SPERM DETECTION — YOLO Annotation Converter")
+    print("🔬 " * 20)
+
+    annotations_dir = _select_annotations_folder()
+    if annotations_dir is None:
+        raise SystemExit(1)
+
+    images_dir = _select_frames_folder()
+    if images_dir is None:
+        raise SystemExit(1)
+
+    output_dir = _select_output_folder()
+
+    print("\n" + "=" * 60)
+    print("📋  Configuration Summary")
+    print("=" * 60)
+    print(f"  📂 Annotations : {annotations_dir}")
+    print(f"  📂 Frames      : {images_dir}")
+    print(f"  📂 Output      : {output_dir}")
+    print("=" * 60)
+
+    root = _init_tk()
+    proceed = messagebox.askyesno(
+        "Confirm",
+        f"Ready to convert annotations.\n\n"
+        f"Annotations : {annotations_dir}\n"
+        f"Frames      : {images_dir}\n"
+        f"Output      : {output_dir}\n\n"
+        "Proceed?",
+    )
+    root.destroy()
+
+    if not proceed:
+        print("❌  Cancelled by user.")
+        raise SystemExit(0)
+
+    print("\n🚀  Starting conversion...\n")
     converter = AnnotationConverter(
-        ANNOTATIONS_DIR,
-        IMAGES_DIR,
-        OUTPUT_DIR,
+        annotations_dir,
+        images_dir,
+        output_dir,
         seed=42,
         keep_empty_labels=True,
     )
