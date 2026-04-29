@@ -45,3 +45,6 @@ logs/
 *.tmp
 *.temp
 *.bak
+
+outputs/
+*.mp4

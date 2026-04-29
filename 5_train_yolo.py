@@ -1,28 +1,46 @@
-import os
+from dataclasses import dataclass
+from pathlib import Path
+from ultralytics import YOLO
 
-# Configuration for training using YOLO
 
-class YOLOConfig:
-    def __init__(self):
-        self.model_type = 'yolo'
-        self.epochs = 50
-        self.learning_rate = 0.001
-        self.batch_size = 16
-        self.image_size = (416, 416)
-        self.data_path = './data/'
-        self.weights_path = './weights/yolo_weights.h5'
+@dataclass
+class TrainConfig:
+    data_yaml: str = "datasets/yolo_data/dataset.yaml"
+    model_name: str = "yolo26n.pt"
+    epochs: int = 50
+    imgsz: int = 640
+    batch: int = 16
+    device: int = 0          # GPU 0
+    workers: int = 0         # importante en Windows
+    project: str = "runs/sperm_yolo"
+    name: str = "exp1"
 
-# YOLO training function
 
-def train_yolo(config):
-    print(f"Training {config.model_type} model...")
-    # Implement the training algorithm here 
-    for epoch in range(config.epochs):
-        print(f"Epoch {epoch + 1}/{config.epochs}...")
-        # Simulate training steps 
-        # Your training code will go here
-    print("Training complete!")
+def train_yolo(cfg: TrainConfig):
+    data_yaml = Path(cfg.data_yaml)
+    if not data_yaml.exists():
+        raise FileNotFoundError(f"Dataset YAML not found: {data_yaml}")
 
-if __name__ == '__main__':
-    config = YOLOConfig()
-    train_yolo(config)
+    print(f"Loading model: {cfg.model_name}")
+    model = YOLO(cfg.model_name)
+
+    print(f"Training with dataset: {data_yaml}")
+    results = model.train(
+        data=str(data_yaml),
+        epochs=cfg.epochs,
+        imgsz=cfg.imgsz,
+        batch=cfg.batch,
+        device=cfg.device,
+        workers=cfg.workers,
+        project=cfg.project,
+        name=cfg.name,
+        patience=20,
+    )
+
+    print("Training complete.")
+    return model, results
+
+
+if __name__ == "__main__":
+    cfg = TrainConfig()
+    train_yolo(cfg)
