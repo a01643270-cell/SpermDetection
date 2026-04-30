@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+import sys
+import io
+try:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+except AttributeError:
+    pass
+
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
