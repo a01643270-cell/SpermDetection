@@ -159,8 +159,15 @@ QUICK_WORKFLOWS = [
 
 def _detect_file_status() -> dict[str, str]:
     """
-    Return a short status string for each step based on files that exist
-    on disk.  Keys match STEPS[*]["id"].
+    Return a short, human-readable status string for each pipeline step
+    based on files that exist on disk.
+
+    Returns
+    -------
+    dict[str, str]
+        Maps each step ID (matching STEPS[*]["id"]) to a status string that
+        may contain emoji indicators and counts (e.g. "📸 150 frames found").
+        Strings starting with "⚠️" indicate missing prerequisites.
     """
     base = Path(".")
 
@@ -715,7 +722,7 @@ class App(tk.Tk):
                 for sid, msg in statuses.items():
                     lbl = self.file_status_labels.get(sid)
                     if lbl:
-                        # Choose colour based on content
+                        # Choose color based on content
                         if "⚠️" in msg:
                             fg = C_WARNING
                         elif "✅" in msg or "🤖" in msg or "📸" in msg or "📄" in msg:
@@ -764,12 +771,19 @@ class App(tk.Tk):
     # Launching steps
     # ------------------------------------------------------------------
 
-    def _launch_step(self, step: dict, _from_workflow: bool = False) -> bool:
+    def _launch_step(self, step: dict, from_workflow: bool = False) -> bool:
         """Validate prereqs (soft warn), confirm, then launch the step.
 
         Returns True if the step was actually launched, False otherwise.
-        The *_from_workflow* flag suppresses the per-step confirm dialog when
-        running as part of a multi-step workflow.
+
+        Parameters
+        ----------
+        step:
+            The step definition dict from STEPS.
+        from_workflow:
+            When True, suppresses the per-step confirm dialog and the
+            soft prerequisite warning because the workflow runner already
+            obtained a single up-front confirmation.
         """
         sid = step["id"]
 
@@ -778,7 +792,7 @@ class App(tk.Tk):
             p for p in step["prereqs"]
             if self.step_status[p] not in ("completed", "skipped")
         ]
-        if missing and not _from_workflow:
+        if missing and not from_workflow:
             step_names = {s["id"]: s["name"] for s in STEPS}
             missing_names = [step_names.get(p, p) for p in missing]
             proceed = messagebox.askyesno(
@@ -793,7 +807,7 @@ class App(tk.Tk):
                 return False
 
         # Per-step confirmation (skipped during workflow mode)
-        if not _from_workflow:
+        if not from_workflow:
             if not messagebox.askyesno(
                 "Launch step",
                 f"Launch  Step {step['number']}: {step['name']}?\n\n"
@@ -859,7 +873,20 @@ class App(tk.Tk):
 
     def _run_step_thread(self, step: dict, cmd: list[str],
                          done_event: threading.Event | None = None) -> None:
-        """Execute the step subprocess and stream its output to the log."""
+        """Execute the step subprocess and stream its output to the log.
+
+        Parameters
+        ----------
+        step:
+            The step definition dict from STEPS.
+        cmd:
+            The fully-built command list to execute via subprocess.
+        done_event:
+            Optional :class:`threading.Event` that is ``set()`` once the step
+            finishes (success or failure).  Used by :meth:`_run_workflow_thread`
+            to block the workflow loop until the step completes before starting
+            the next one.
+        """
         sid = step["id"]
         exit_code = -1
         try:
@@ -950,8 +977,9 @@ class App(tk.Tk):
             return
 
         steps_to_run = [s for s in STEPS if s["id"] in step_ids]
-        # Preserve the order defined in step_ids
-        steps_to_run.sort(key=lambda s: step_ids.index(s["id"]))
+        # Preserve the order defined in step_ids using a pre-built index
+        id_order = {sid: i for i, sid in enumerate(step_ids)}
+        steps_to_run.sort(key=lambda s: id_order[s["id"]])
 
         names = ", ".join(f"Step {s['number']} ({s['name']})" for s in steps_to_run)
         if not messagebox.askyesno(
@@ -1018,7 +1046,15 @@ class App(tk.Tk):
                 daemon=True,
             )
             worker.start()
-            done_event.wait()  # block until _finish() fires
+            # Wait up to 2 hours; handles hung subprocesses gracefully
+            finished_in_time = done_event.wait(timeout=7200)
+            if not finished_in_time:
+                self._q_log(
+                    f"  ⛔  Workflow timed out waiting for Step {step['number']} "
+                    f"({step['name']}).",
+                    "error",
+                )
+                break
 
             # Abort workflow if the step failed
             if self.step_status[step["id"]] != "completed":
