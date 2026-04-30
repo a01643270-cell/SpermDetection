@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 main_gui.py  –  SpermDetection Pipeline Launcher
 =================================================

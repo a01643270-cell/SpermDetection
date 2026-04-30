@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+import sys
+import io
+try:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+except AttributeError:
+    pass
+
 import json
 import random
 import shutil
