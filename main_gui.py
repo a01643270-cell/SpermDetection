@@ -12,6 +12,12 @@ Step 3 → 3_convert_to_yolo.py  – Convert to YOLO
 Step 4 → 5_train_yolo.py       – Train YOLO Model  (script numbered 5 by convention)
 Step 5 → 4_yolo_deepsort.py    – Detect & Track    (script numbered 4 by convention)
 
+Workflow modes
+--------------
+• Individual  – launch any single step directly (no forced ordering)
+• Sequential  – run steps 1 → 5 in order (skips already-completed ones)
+• Custom      – tick any subset of steps and run them in order
+
 Run
 ---
     python main_gui.py
@@ -135,6 +141,99 @@ STATUS_COLOR = {
     "error":     C_ERROR,
 }
 
+# Quick-access workflow presets (step-ids to run in order)
+QUICK_WORKFLOWS = [
+    ("🎬 Extract Only",  ["extract_frames"]),
+    ("✏️  Annotate Only", ["annotate"]),
+    ("🔄 Convert Only",  ["convert_yolo"]),
+    ("🤖 Train Only",    ["train_yolo"]),
+    ("🔍 Detect Only",   ["detect_track"]),
+    ("🚀 Full Pipeline", ["extract_frames", "annotate", "convert_yolo",
+                          "train_yolo", "detect_track"]),
+]
+
+
+# ---------------------------------------------------------------------------
+# File auto-detection helpers
+# ---------------------------------------------------------------------------
+
+def _detect_file_status() -> dict[str, str]:
+    """
+    Return a short status string for each step based on files that exist
+    on disk.  Keys match STEPS[*]["id"].
+    """
+    base = Path(".")
+
+    def _has_avi():
+        return any((base / "datasets" / "raw_videos").glob("*.avi"))
+
+    def _count_frames():
+        frames_dir = base / "datasets" / "frames"
+        if not frames_dir.exists():
+            return 0
+        return sum(1 for _ in frames_dir.rglob("*.jpg")) + sum(
+            1 for _ in frames_dir.rglob("*.png")
+        )
+
+    def _count_annotations():
+        ann_dir = base / "datasets" / "annotations"
+        if not ann_dir.exists():
+            return 0
+        return sum(1 for _ in ann_dir.rglob("*_annotations.json"))
+
+    def _yolo_dataset_exists():
+        return (base / "datasets" / "yolo_data" / "dataset.yaml").exists()
+
+    def _best_model_exists():
+        runs = base / "runs"
+        if not runs.exists():
+            return False
+        return any(runs.rglob("best.pt"))
+
+    statuses: dict[str, str] = {}
+
+    # Step 1 – Extract Frames
+    n_frames = _count_frames()
+    if n_frames:
+        statuses["extract_frames"] = f"📸 {n_frames} frames found"
+    elif _has_avi():
+        statuses["extract_frames"] = "📽️  AVI videos found – ready to extract"
+    else:
+        statuses["extract_frames"] = "⚠️  No raw videos found in datasets/raw_videos/"
+
+    # Step 2 – Annotate
+    n_ann = _count_annotations()
+    if n_ann:
+        statuses["annotate"] = f"📄 {n_ann} annotation file(s) found"
+    elif n_frames:
+        statuses["annotate"] = f"📸 {n_frames} frames available – ready to annotate"
+    else:
+        statuses["annotate"] = "⚠️  No frames found – run Step 1 first"
+
+    # Step 3 – Convert to YOLO
+    if _yolo_dataset_exists():
+        statuses["convert_yolo"] = "✅ dataset.yaml found in datasets/yolo_data/"
+    elif n_ann:
+        statuses["convert_yolo"] = f"📄 {n_ann} annotation(s) available – ready to convert"
+    else:
+        statuses["convert_yolo"] = "⚠️  No annotations found – run Step 2 first"
+
+    # Step 4 – Train YOLO
+    if _best_model_exists():
+        statuses["train_yolo"] = "🤖 Trained model (best.pt) found in runs/"
+    elif _yolo_dataset_exists():
+        statuses["train_yolo"] = "✅ Dataset ready – ready to train"
+    else:
+        statuses["train_yolo"] = "⚠️  No dataset.yaml found – run Step 3 first"
+
+    # Step 5 – Detect & Track
+    if _best_model_exists():
+        statuses["detect_track"] = "🤖 Model ready – ready to detect"
+    else:
+        statuses["detect_track"] = "⚠️  No trained model found – run Step 4 first"
+
+    return statuses
+
 
 # ---------------------------------------------------------------------------
 # Helper – styled tk widgets
@@ -169,18 +268,27 @@ class App(tk.Tk):
         super().__init__()
         self.title(APP_TITLE)
         self.configure(bg=C_BG)
-        self.minsize(980, 700)
-        self.geometry("1100x800")
+        self.minsize(1000, 720)
+        self.geometry("1200x860")
 
         # State – keyed by step id
         self.step_status: dict[str, str] = {s["id"]: "pending" for s in STEPS}
         self.active_proc: subprocess.Popen | None = None
         self._log_queue: queue.Queue[str] = queue.Queue()
         self.config_vars: dict[str, tk.Variable] = {}
+        # Checkboxes for Custom Order mode
+        self.custom_step_vars: dict[str, tk.BooleanVar] = {
+            s["id"]: tk.BooleanVar(value=True) for s in STEPS
+        }
+        # File-status labels per card (updated by _refresh_file_status)
+        self.file_status_labels: dict[str, tk.Label] = {}
+        # Track whether a sequential workflow is running
+        self._workflow_running = False
 
         self._load_state()
         self._build_ui()
         self._refresh_all_cards()
+        self._refresh_file_status()
         self._poll_log_queue()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -216,6 +324,7 @@ class App(tk.Tk):
     def _build_ui(self) -> None:
         self._build_header()
         self._build_progress_bar()
+        self._build_quick_access_panel()
 
         # Main content area
         content = tk.Frame(self, bg=C_BG)
@@ -242,7 +351,7 @@ class App(tk.Tk):
                bg=C_SURFACE, fg=C_TEXT).pack(side=tk.LEFT, padx=20)
         _label(hdr, "Pipeline Launcher", font=("Segoe UI", 11),
                bg=C_SURFACE, fg=C_TEXT_DIM).pack(side=tk.LEFT, padx=4)
-        _label(hdr, "v1.0", font=("Segoe UI", 9),
+        _label(hdr, "v2.0", font=("Segoe UI", 9),
                bg=C_SURFACE, fg=C_ACCENT).pack(side=tk.RIGHT, padx=20)
 
     def _build_progress_bar(self) -> None:
@@ -272,6 +381,67 @@ class App(tk.Tk):
         self.progress_label = _label(bar_frame, "0 / 5",
                                      fg=C_TEXT_DIM)
         self.progress_label.pack(side=tk.LEFT)
+
+    def _build_quick_access_panel(self) -> None:
+        """Build the Quick Access / workflow-mode panel."""
+        panel = tk.Frame(self, bg=C_SURFACE,
+                         highlightbackground=C_BORDER, highlightthickness=1)
+        panel.pack(fill=tk.X, padx=16, pady=(0, 6))
+
+        # Header row
+        hdr = tk.Frame(panel, bg=C_BORDER, pady=4)
+        hdr.pack(fill=tk.X)
+        _label(hdr, "⚡  Quick Access  –  Workflow Shortcuts",
+               font=FONT_HEADING, bg=C_BORDER, fg=C_TEXT).pack(
+            side=tk.LEFT, padx=10)
+        _label(
+            hdr,
+            "Run any step independently – no forced order",
+            font=("Segoe UI", 8), bg=C_BORDER, fg=C_TEXT_DIM,
+        ).pack(side=tk.LEFT, padx=8)
+
+        # Workflow buttons row
+        btn_row = tk.Frame(panel, bg=C_SURFACE, pady=6, padx=10)
+        btn_row.pack(fill=tk.X)
+
+        # Button styles per workflow type
+        quick_btn_styles = {
+            "🎬 Extract Only":  C_ACCENT,
+            "✏️  Annotate Only": C_ACCENT,
+            "🔄 Convert Only":  C_ACCENT,
+            "🤖 Train Only":    C_ACCENT,
+            "🔍 Detect Only":   C_ACCENT,
+            "🚀 Full Pipeline": "#2d7a2d",   # green for full pipeline
+        }
+
+        for label, step_ids in QUICK_WORKFLOWS:
+            bg = quick_btn_styles.get(label, C_ACCENT)
+            _btn(
+                btn_row, label,
+                command=lambda ids=step_ids: self._run_workflow(ids),
+                bg=bg, pady=4, padx=8,
+                font=("Segoe UI", 9, "bold"),
+            ).pack(side=tk.LEFT, padx=(0, 6))
+
+        # Separator
+        tk.Frame(btn_row, bg=C_BORDER, width=1).pack(
+            side=tk.LEFT, fill=tk.Y, padx=(4, 8))
+
+        # Custom Order button
+        _btn(
+            btn_row, "☑  Run Custom Order",
+            command=self._run_custom_order,
+            bg="#5a4a8a", pady=4, padx=8,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        # Refresh file status button
+        _btn(
+            btn_row, "🔍 Scan Files",
+            command=self._refresh_file_status,
+            bg=C_BORDER, fg=C_TEXT_DIM, pady=4, padx=8,
+            font=("Segoe UI", 9),
+        ).pack(side=tk.RIGHT, padx=(0, 0))
 
     def _build_steps_panel(self, parent: tk.Frame) -> None:
         outer = tk.Frame(parent, bg=C_BG)
@@ -316,7 +486,7 @@ class App(tk.Tk):
         body = tk.Frame(card, bg=C_SURFACE, padx=10, pady=8)
         body.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Row 1: number + name + status icon
+        # Row 1: number + name + status icon + custom-order checkbox
         top = tk.Frame(body, bg=C_SURFACE)
         top.pack(fill=tk.X)
 
@@ -338,14 +508,35 @@ class App(tk.Tk):
                              fg=C_TEXT_DIM, bg=C_SURFACE)
         status_lbl.pack(side=tk.RIGHT, padx=(0, 4))
 
+        # Custom-order checkbox (right side, before status)
+        cb = tk.Checkbutton(
+            top,
+            text="☑ custom",
+            variable=self.custom_step_vars[step["id"]],
+            bg=C_SURFACE, fg=C_TEXT_DIM,
+            selectcolor=C_BG,
+            activebackground=C_SURFACE, activeforeground=C_TEXT,
+            font=("Segoe UI", 8),
+            relief=tk.FLAT,
+        )
+        cb.pack(side=tk.RIGHT, padx=(0, 8))
+
         # Row 2: description
         desc_lbl = _label(body, step["description"],
                           font=("Segoe UI", 9),
                           fg=C_TEXT_DIM, bg=C_SURFACE,
                           justify=tk.LEFT, anchor="w")
-        desc_lbl.pack(fill=tk.X, pady=(4, 6))
+        desc_lbl.pack(fill=tk.X, pady=(4, 2))
 
-        # Row 3: script name + buttons
+        # Row 3: auto-detected file status
+        file_status_lbl = _label(body, "  🔍 Scanning files…",
+                                  font=("Segoe UI", 8),
+                                  fg=C_ACCENT2, bg=C_SURFACE,
+                                  justify=tk.LEFT, anchor="w")
+        file_status_lbl.pack(fill=tk.X, pady=(0, 4))
+        self.file_status_labels[step["id"]] = file_status_lbl
+
+        # Row 4: script name + buttons
         bot = tk.Frame(body, bg=C_SURFACE)
         bot.pack(fill=tk.X)
 
@@ -486,6 +677,11 @@ class App(tk.Tk):
         self.progress_var.set(completed)
         self.progress_label.configure(text=f"{completed} / {len(STEPS)}")
 
+        any_running = (
+            any(self.step_status[s["id"]] == "running" for s in STEPS)
+            or self._workflow_running
+        )
+
         for step in STEPS:
             sid = step["id"]
             status = self.step_status[sid]
@@ -500,22 +696,36 @@ class App(tk.Tk):
                 bg=color if status != "pending" else C_ACCENT
             )
 
-            # Disable launch if prereqs not done or another step is running
-            any_running = any(
-                self.step_status[s["id"]] == "running" for s in STEPS
-            )
-            prereqs_ok = all(
-                self.step_status[p] in ("completed", "skipped")
-                for p in step["prereqs"]
-            )
-            launch_state = (
-                tk.DISABLED
-                if any_running or not prereqs_ok
-                else tk.NORMAL
-            )
+            # Hard-block ONLY when another step / workflow is already running.
+            # Missing prerequisites show a soft warning when the user clicks.
+            launch_state = tk.DISABLED if any_running else tk.NORMAL
             widgets["launch_btn"].configure(state=launch_state)
             if widgets["skip_btn"]:
                 widgets["skip_btn"].configure(state=launch_state)
+
+    # ------------------------------------------------------------------
+    # File status refresh
+    # ------------------------------------------------------------------
+
+    def _refresh_file_status(self) -> None:
+        """Update the file-status label on every step card (non-blocking)."""
+        def _worker():
+            statuses = _detect_file_status()
+            def _apply():
+                for sid, msg in statuses.items():
+                    lbl = self.file_status_labels.get(sid)
+                    if lbl:
+                        # Choose colour based on content
+                        if "⚠️" in msg:
+                            fg = C_WARNING
+                        elif "✅" in msg or "🤖" in msg or "📸" in msg or "📄" in msg:
+                            fg = C_SUCCESS
+                        else:
+                            fg = C_ACCENT2
+                        lbl.configure(text=f"  {msg}", fg=fg)
+            self.after(0, _apply)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Logging helpers
@@ -554,30 +764,42 @@ class App(tk.Tk):
     # Launching steps
     # ------------------------------------------------------------------
 
-    def _launch_step(self, step: dict) -> None:
-        """Validate prereqs, confirm, then launch the step in a thread."""
+    def _launch_step(self, step: dict, _from_workflow: bool = False) -> bool:
+        """Validate prereqs (soft warn), confirm, then launch the step.
+
+        Returns True if the step was actually launched, False otherwise.
+        The *_from_workflow* flag suppresses the per-step confirm dialog when
+        running as part of a multi-step workflow.
+        """
         sid = step["id"]
 
-        # Check prereqs
+        # Soft warning – inform but never block
         missing = [
             p for p in step["prereqs"]
             if self.step_status[p] not in ("completed", "skipped")
         ]
-        if missing:
-            messagebox.showwarning(
-                "Prerequisites missing",
-                f"Please complete the following steps first:\n\n"
-                + "\n".join(f"• {p}" for p in missing),
+        if missing and not _from_workflow:
+            step_names = {s["id"]: s["name"] for s in STEPS}
+            missing_names = [step_names.get(p, p) for p in missing]
+            proceed = messagebox.askyesno(
+                "Prerequisites not completed",
+                f"Step {step['number']}: {step['name']}\n\n"
+                "The following prerequisite steps have not been completed:\n\n"
+                + "\n".join(f"  ⚠️  {n}" for n in missing_names)
+                + "\n\nYou can still run this step (it may fail if required\n"
+                "input files are missing).  Continue anyway?",
             )
-            return
+            if not proceed:
+                return False
 
-        # Confirm
-        if not messagebox.askyesno(
-            "Launch step",
-            f"Launch  Step {step['number']}: {step['name']}?\n\n"
-            f"Script: {step['script']}",
-        ):
-            return
+        # Per-step confirmation (skipped during workflow mode)
+        if not _from_workflow:
+            if not messagebox.askyesno(
+                "Launch step",
+                f"Launch  Step {step['number']}: {step['name']}?\n\n"
+                f"Script: {step['script']}",
+            ):
+                return False
 
         script_path = Path(step["script"])
         if not script_path.exists():
@@ -586,7 +808,7 @@ class App(tk.Tk):
                 f"Cannot find '{script_path}'.\n"
                 "Make sure you are running from the SpermDetection directory.",
             )
-            return
+            return False
 
         # Build command – pass config args where relevant
         cmd = self._build_command(step)
@@ -614,6 +836,7 @@ class App(tk.Tk):
             daemon=True,
         )
         t.start()
+        return True
 
     def _build_command(self, step: dict) -> list[str]:
         """Build the subprocess command for a step, injecting config args."""
@@ -634,7 +857,8 @@ class App(tk.Tk):
 
         return cmd
 
-    def _run_step_thread(self, step: dict, cmd: list[str]) -> None:
+    def _run_step_thread(self, step: dict, cmd: list[str],
+                         done_event: threading.Event | None = None) -> None:
         """Execute the step subprocess and stream its output to the log."""
         sid = step["id"]
         exit_code = -1
@@ -686,7 +910,10 @@ class App(tk.Tk):
             self._log_separator()
             self._save_state()
             self._refresh_all_cards()
+            self._refresh_file_status()
             self.status_bar.configure(text="Ready")
+            if done_event is not None:
+                done_event.set()
 
         self.after(0, _finish)
 
@@ -705,6 +932,126 @@ class App(tk.Tk):
             )
             self._save_state()
             self._refresh_all_cards()
+
+    # ------------------------------------------------------------------
+    # Workflow execution (multi-step sequential runs)
+    # ------------------------------------------------------------------
+
+    def _run_workflow(self, step_ids: list[str]) -> None:
+        """Run a list of step IDs in order (in a background thread)."""
+        if self._workflow_running or any(
+            self.step_status[s["id"]] == "running" for s in STEPS
+        ):
+            messagebox.showwarning(
+                "Already running",
+                "A step or workflow is already in progress.\n"
+                "Please wait for it to finish.",
+            )
+            return
+
+        steps_to_run = [s for s in STEPS if s["id"] in step_ids]
+        # Preserve the order defined in step_ids
+        steps_to_run.sort(key=lambda s: step_ids.index(s["id"]))
+
+        names = ", ".join(f"Step {s['number']} ({s['name']})" for s in steps_to_run)
+        if not messagebox.askyesno(
+            "Run workflow",
+            f"The following steps will run in order:\n\n{names}\n\n"
+            "Each step's dialogs will appear in sequence.\nProceed?",
+        ):
+            return
+
+        self._workflow_running = True
+        self._refresh_all_cards()
+        t = threading.Thread(
+            target=self._run_workflow_thread,
+            args=(steps_to_run,),
+            daemon=True,
+        )
+        t.start()
+
+    def _run_workflow_thread(self, steps: list[dict]) -> None:
+        """Background thread: run steps one after another."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._q_log(
+            f"[{ts}]  🚀  Starting workflow: "
+            + " → ".join(s["name"] for s in steps),
+            "header",
+        )
+
+        for step in steps:
+            # Check if script exists
+            script_path = Path(step["script"])
+            if not script_path.exists():
+                self._q_log(
+                    f"  ❌  Script '{step['script']}' not found – stopping workflow.",
+                    "error",
+                )
+                break
+
+            cmd = self._build_command(step)
+
+            # Update status on main thread
+            def _mark_running(s=step):
+                self.step_status[s["id"]] = "running"
+                self._refresh_all_cards()
+                self.status_bar.configure(
+                    text=f"Workflow – Running Step {s['number']}: {s['name']} …"
+                )
+                ts2 = datetime.now().strftime("%H:%M:%S")
+                self._log_separator()
+                self._log(
+                    f"[{ts2}]  ▶  Workflow – Step {s['number']}: {s['name']}",
+                    "header",
+                )
+                self._log(f"  Command: {' '.join(cmd)}", "dim")
+                self._log_separator()
+
+            self.after(0, _mark_running)
+
+            done_event = threading.Event()
+            # Run the step in a *new* thread so _run_step_thread can post
+            # back to the main thread while this workflow thread waits.
+            worker = threading.Thread(
+                target=self._run_step_thread,
+                args=(step, cmd, done_event),
+                daemon=True,
+            )
+            worker.start()
+            done_event.wait()  # block until _finish() fires
+
+            # Abort workflow if the step failed
+            if self.step_status[step["id"]] != "completed":
+                self._q_log(
+                    f"  ⛔  Workflow stopped because Step {step['number']} "
+                    f"({step['name']}) did not complete successfully.",
+                    "error",
+                )
+                break
+
+        def _workflow_done():
+            self._workflow_running = False
+            self._refresh_all_cards()
+            self.status_bar.configure(text="Ready")
+            ts3 = datetime.now().strftime("%H:%M:%S")
+            self._log(f"[{ts3}]  ✅  Workflow finished.", "success")
+            self._log_separator()
+
+        self.after(0, _workflow_done)
+
+    def _run_custom_order(self) -> None:
+        """Run only the steps whose custom-order checkbox is ticked."""
+        selected_ids = [
+            sid for sid, var in self.custom_step_vars.items() if var.get()
+        ]
+        if not selected_ids:
+            messagebox.showwarning(
+                "No steps selected",
+                "Tick at least one step's ☑ custom checkbox before running\n"
+                "Custom Order.",
+            )
+            return
+        self._run_workflow(selected_ids)
 
     # ------------------------------------------------------------------
     # Misc actions
@@ -727,13 +1074,17 @@ class App(tk.Tk):
         messagebox.showinfo(
             "About SpermDetection Launcher",
             "SpermDetection Pipeline Launcher\n"
-            "Version 1.0\n\n"
+            "Version 2.0\n\n"
             "A GUI front-end for the full sperm-detection pipeline:\n"
             "  1. Extract Frames\n"
             "  2. Annotate Images\n"
             "  3. Convert to YOLO\n"
             "  4. Train YOLO Model\n"
             "  5. Detect & Track\n\n"
+            "Workflow modes:\n"
+            "  • Individual  – run any step independently\n"
+            "  • Sequential  – Full Pipeline button (1→5)\n"
+            "  • Custom      – tick steps and click 'Run Custom Order'\n\n"
             "Keyboard shortcuts:\n"
             "  Ctrl+L  –  clear log\n"
             "  Ctrl+Q  –  quit\n\n"
@@ -781,14 +1132,15 @@ def _classify_line(line: str) -> str:
 def main() -> None:
     app = App()
     # Welcome message
-    app._log("Welcome to the SpermDetection Pipeline Launcher!", "header")
-    app._log(
-        "Select a step on the left and click ▶ Launch to run it.", "dim"
-    )
-    app._log(
-        "Steps without completed prerequisites are automatically disabled.",
-        "dim",
-    )
+    app._log("Welcome to the SpermDetection Pipeline Launcher  v2.0!", "header")
+    app._log("", "dim")
+    app._log("  🚀  Quick Access buttons let you run any workflow in one click.", "dim")
+    app._log("  ▶   Individual 'Launch' buttons run a single step at any time.", "dim")
+    app._log("  ☑   Tick the 'custom' checkboxes then click 'Run Custom Order'.", "dim")
+    app._log("  ⚠️   Prerequisites show a soft warning – you can still proceed.", "dim")
+    app._log("  🔍  Click 'Scan Files' to refresh detected-file status on cards.", "dim")
+    app._log("", "dim")
+    app._log("  Keyboard shortcuts:  Ctrl+L = clear log   Ctrl+Q = quit", "dim")
     app._log_separator()
     app.mainloop()
 
