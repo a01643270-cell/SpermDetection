@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk

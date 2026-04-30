@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 import cv2
 from pathlib import Path
 from tqdm import tqdm
@@ -8,15 +13,6 @@ from tkinter import filedialog, messagebox, simpledialog
 
 class FrameExtractor:
     def __init__(self, input_dir, output_dir, num_frames_per_video=100, image_format='jpg'):
-        """
-        Extract a specific number of frames from each video.
-
-        Args:
-            input_dir: Directory containing AVI files
-            output_dir: Directory to save extracted frames
-            num_frames_per_video: Exact number of frames to extract per video
-            image_format: 'jpg' or 'png'
-        """
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.num_frames_per_video = num_frames_per_video
@@ -26,9 +22,6 @@ class FrameExtractor:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_target_indices(self, total_frames):
-        """
-        Build evenly spaced frame indices without reading the whole video.
-        """
         n = min(self.num_frames_per_video, total_frames)
 
         if n <= 1:
@@ -39,7 +32,6 @@ class FrameExtractor:
             for i in range(n)
         ]
 
-        # Remove duplicates while preserving order
         seen = set()
         unique_indices = []
         for idx in indices:
@@ -50,14 +42,15 @@ class FrameExtractor:
         return unique_indices
 
     def extract_from_video(self, video_path):
-        """Extract only the selected frames from a single video."""
         cap = cv2.VideoCapture(str(video_path))
 
         if not cap.isOpened():
             print(f"❌ Error opening video: {video_path}")
             return False
 
-        video_name = video_path.stem
+        relative_video = video_path.relative_to(self.input_dir).with_suffix('')
+        video_key = "_".join(relative_video.parts)
+
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -68,32 +61,30 @@ class FrameExtractor:
 
         target_indices = self._build_target_indices(total_frames)
 
-        video_output_dir = self.output_dir / video_name
-        video_output_dir.mkdir(parents=True, exist_ok=True)
-
         saved_count = 0
         video_metadata = {
-            'video_name': video_name,
+            'video_name': str(relative_video),
             'fps': fps,
             'total_frames': total_frames,
             'requested_frames': self.num_frames_per_video,
             'saved_frames': []
         }
 
-        pbar = tqdm(total=len(target_indices), desc=f"Processing {video_name}")
+        pbar = tqdm(total=len(target_indices), desc=f"Processing {relative_video}")
 
         for frame_idx in target_indices:
-            # Jump directly to the target frame
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
 
             if not ret:
-                print(f"⚠️ Could not read frame {frame_idx} from {video_name}")
+                print(f"⚠️ Could not read frame {frame_idx} from {video_path}")
                 continue
 
             timestamp = frame_idx / fps if fps > 0 else None
-            frame_filename = f"{video_name}_frame_{frame_idx:06d}.{self.image_format}"
-            frame_path = video_output_dir / frame_filename
+
+            # Todos los frames en una sola carpeta
+            frame_filename = f"{video_key}_frame_{frame_idx:06d}.{self.image_format}"
+            frame_path = self.output_dir / frame_filename
 
             cv2.imwrite(str(frame_path), frame)
 
@@ -110,13 +101,13 @@ class FrameExtractor:
         pbar.close()
         cap.release()
 
-        self.metadata[video_name] = video_metadata
-        print(f"✅ Extracted {saved_count} frames from {video_name}")
+        self.metadata[video_key] = video_metadata
+        print(f"✅ Extracted {saved_count} frames from {relative_video}")
         return True
 
     def extract_all(self):
-        """Extract frames from all AVI files in input directory."""
-        avi_files = list(self.input_dir.glob('*.avi'))
+        """Busca AVI en la carpeta seleccionada y en todas sus subcarpetas."""
+        avi_files = list(self.input_dir.rglob('*.avi')) + list(self.input_dir.rglob('*.AVI'))
 
         if not avi_files:
             print(f"❌ No AVI files found in {self.input_dir}")
@@ -137,7 +128,6 @@ class FrameExtractor:
 
 
 def _init_tk():
-    """Create and immediately hide a Tk root window."""
     root = tk.Tk()
     root.withdraw()
     try:
@@ -148,7 +138,6 @@ def _init_tk():
 
 
 def _select_input_folder():
-    """Ask the user to select the raw_videos input folder."""
     print("\n" + "=" * 60)
     print("📁  STEP 1: Select INPUT folder  (raw_videos)")
     print("=" * 60)
@@ -162,7 +151,7 @@ def _select_input_folder():
 
     root = _init_tk()
     folder = filedialog.askdirectory(
-        title="Select 'raw_videos' folder — contains .avi video files",
+        title="Select folder with .avi videos",
         initialdir=default,
     )
     root.destroy()
@@ -172,32 +161,20 @@ def _select_input_folder():
         return None
 
     folder_path = Path(folder)
-    avi_files = list(folder_path.glob("*.avi"))
-    if not avi_files:
-        root2 = _init_tk()
-        retry = messagebox.askyesno(
-            "No AVI files found",
-            f"No .avi files were found in:\n{folder}\n\nDo you want to select a different folder?",
-        )
-        root2.destroy()
-        if retry:
-            return _select_input_folder()
-        print("⚠️   Proceeding with the selected folder (no .avi files found).")
+    avi_files = list(folder_path.rglob("*.avi")) + list(folder_path.rglob("*.AVI"))
 
-    print(f"✅  Input folder  : {folder}")
-    if avi_files:
-        print(f"    Found {len(avi_files)} .avi file(s): {', '.join(f.name for f in avi_files[:5])}"
-              + (" ..." if len(avi_files) > 5 else ""))
+    print(f"✅  Input folder: {folder}")
+    print(f"    Found {len(avi_files)} .avi file(s) including subfolders")
+
     return folder
 
 
 def _select_output_folder():
-    """Ask the user to select or confirm the frames output folder."""
     print("\n" + "=" * 60)
     print("📁  STEP 2: Select OUTPUT folder  (frames)")
     print("=" * 60)
     print("Please choose the folder where extracted frames will be saved.")
-    print("(It will be created if it does not exist.)")
+    print("(All frames will be saved in this single folder.)")
 
     default = (
         str(Path("datasets/frames").resolve())
@@ -207,22 +184,21 @@ def _select_output_folder():
 
     root = _init_tk()
     folder = filedialog.askdirectory(
-        title="Select 'frames' folder — where extracted frames will be saved",
+        title="Select output folder",
         initialdir=default,
     )
     root.destroy()
 
     if not folder:
         folder = "datasets/frames"
-        print(f"⚠️   No folder selected. Using default: {folder}")
+        print(f"⚠️ Using default: {folder}")
     else:
-        print(f"✅  Output folder : {folder}")
+        print(f"✅ Output folder: {folder}")
 
     return folder
 
 
 def _ask_num_frames():
-    """Ask the user how many frames to extract per video."""
     print("\n" + "=" * 60)
     print("⚙️   STEP 3: Configure extraction parameters")
     print("=" * 60)

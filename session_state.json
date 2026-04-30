@@ -1,0 +1,9 @@
+{
+  "steps": {
+    "extract_frames": "completed",
+    "annotate": "completed",
+    "convert_yolo": "completed",
+    "train_yolo": "pending",
+    "detect_track": "completed"
+  }
+}
